@@ -1,0 +1,341 @@
+第五章
+系统批量运维管理器pexpect详解
+pexpect可以理解成Linux下的expect的Python封装，通过pexpect我们可以实现对ssh、ftp、passwd、telnet等命令进行自动交互。
+5.1 pexpect的安装
+pip install pexpect
+easy_install pexpect
+源码安装：
+wget https://github.com/pexpect/pexpect/releases/download/3.0/pexpect-3.0.tar.gz -O pexpect-3.0.tar.gz
+tar -zxvf pexpect-3.0.tar.gz
+cd pexpect-3.0
+python setup.py install
+校验是否安装成功：
+python
+>>import pexpect
+一个简单实现SSH自动登录的示例：
+import pexpect
+child = pexpect.spawn('scp foo user@example.com:.')   #spawn启动scp程序
+child.expect('Password:')   #expect方法等待子程序产生的输出，判断是否匹配定义的字符串'Password:'
+child.sendline(mypassword)   #匹配后则发送密码串进行回应
+5.2 pexpect的核心组件
+核心组件包括pexpect类、run函数及派生类pxssh
+（1）、spawn类
+pexpect不会解析shell命令当中的元字符，包括重定向">"、管道"|"、或通配符"*"，当然，可以通过以下技巧来解决这个问题，将存在着三个元字符的命令作为/bin/bash的参数进行调用：
+child = pexpect.spawn('/bin/bash -c "ls -l | grep LOG > logs.txt"')
+child.expect(pexpect.EOF)
+将命令的参数以Python列表形式进行替换，从而使我们语法更清晰：
+shell_cmd ='ls -l | grep LOG > logs.txt'
+child = pexpect.spawn('/bin/bash',['-c',shell_cmd])
+child.expect(pexpect.EOF)
+获取pexpect的输入输出信息，两种方式：一种为写到日志问阿金，另一种为输出到标准输出
+写入到日志文件：
+child = pexpect.spawn('some_command')
+fout = file('mylog.txt','w')
+child.logfile = fout
+输出到标准输出：
+child = pexpect.spawn('some_command')
+child.logfile = sys.stdout
+示例，实现远程SSH登录，登录成功后显示/home目录文件清单
+
+#!/usr/bin/env python
+import pexpect
+import sys
+child = pexpect.spawn('ssh root@192.168.1.21')
+fout = file('mylog.txt','w')
+child.logfile = fout
+#child.logfile = sys.stdout
+child.expect("password:")
+child.sendline("U3497DT32t")
+child.expect('#')
+child.sendline('ls /home')
+child.expect('#')
+
+expect方法定义了一个子程序输出匹配规则
+当不止一个列表元素被匹配，则返回的结果是子程序输出最先出现的那个元素，或者是最列表左边的元素
+import pexpect
+cjild = pexpect.spawn("echo 'foobar'")
+print(child.expect(['bar','foo','foobar']))
+输出：1，即'foo'被匹配
+
+当超时被触发时，expect将匹配到pexpect.TIMEOUT
+pexpect.EOF、pexpect.TIMOUT作为参数，将返回所处列表中的索引
+index = p.expect(['good','bad',pexpect.EOF,pexpect.TIMEOUT])
+if index == 0:
+    do_something()
+elif index == 1:
+    do_something_else()
+elif index == 2:
+    do_some_other_thing()
+elif index == 3:
+    do_something_completely_different()
+以上代码等价于：
+try:
+    index = p.expect(['good','bad'])
+    if index == 0:
+        do_something()
+    elif index == 1:
+        do_something_else()
+except EOF:
+    do_some_other_thing()
+expect TIMEOUT:
+    do_something_completely_different()
+
+expect成员：befor成员保存了最近匹配成功之前的内容，after成员保存了最近匹配成功之后的内容
+import pexpect
+import sys
+
+child = pexpect.spawn('ssh 192.168.1.21')
+fout = file('mylog.txt','w')
+child.logfile = fout
+
+child.expect(["password:"])
+child.sendline("980405")
+print("before:"+child.before)
+print("after:"+child.after)
+运行结果如下：
+before:root@192.168.1.21's
+after:password:
+5.1 run函数
+run是使用pexpect封装的调用外部命令的函数，类似os.system或os.popen，run()可以同时获得命令的输出结果及命令的退出状态
+from pexpect import *
+child = spawn('scp foo user@example.com:.')
+child.expect('(?i)password')
+child.sendline(mypassword)
+或者
+from pexpect import *
+run('scp foo user@example.com:.', events={'(?i)password': mypassword})
+
+pxssh类
+pxssh
+是pexpect的派生类，针对ssh会话操作再做一层封装
+pxssh类远程连接主机并执行命令：
+vi /home/test/pexpect/simple.py
+import pxssh
+import getpass
+try:
+    s = pxssh.pxssh()   #创建pxssh对象s
+    #hostname = raw_input('hostname: ')   #python使用raw_input()、input()有区别，python3只有input()
+    #username = raw_input('username: ')
+    hostname = input('hostname: ')
+    username = input('username: ')
+    password = getpass.getpass('please input password: ')   #接受密码输入
+    s.login (hostname, username, password)   #建立ssh连接
+    s.sendline ('uptime')   #运行uptime命令
+    s.prompt()   #匹配系统提示符
+    print(s.before)   #打印出现系统提示符前的命令输出
+    s.sendline ('ls -l')
+    s.prompt()
+    print(s.before)
+    s.sendline ('df')
+    s.prompt()
+    print(s.before)
+    s.logout()   #断开ssh连接
+except pxssh.ExceptionPxssh as e:
+    print("pxssh filed on login.")
+    print str(e)
+
+5.3pexpect应用示例
+（1）、实现一个自动化FTP操作
+vi /home/test/pexpect/simple2.py
+
+import pexpect
+import sys
+child = pexpect.spawnu('ftp ftp.openbsd.org'')   #运行ftp命令
+child.expect('(?i)name .*: ')   #(?i)表示后面的字符串正则匹配忽略大小写
+child.sendline('anonymous')   #输入ftp账号信息
+child.expect('(?i)password')   #匹配密码输入提示
+child.sendline('pexpect@sourceforge.net')   #输入ftp密码
+child.expect('ftp> ')
+child.sendline('bin')   #启用二进制传输模式
+child.expect('ftp> ')
+child.sendline('get robots.txt')   #下载robots.txt文件
+child.expect('ftp> ')
+sys.stdout.write (child.before)   #输出匹配"ftp> "之前的输入与输出
+print("Escape character is '^]'.\n")
+sys.stdout.write (child.after)
+sys.stdout.flush()
+#调用interact()让出控制权，用户可以继续当前的会话手工控制子程序，默认输入“^]”字符跳出
+child.interact()
+child.sendline('bye')
+child.close()
+（2）、远程文件自动打包并下载
+vi /home/test/pexpect/simple3.py
+
+import pexpect
+import sys
+
+ip="192.168.1.21"   #定义目标主机
+user="root"   #目标主机用户
+passwd="H6DSY#*$df32"   #目标主机密码
+target_file="/data/logs/nginx_access.log"   #目标主机nginx日志文件
+child = pexpect.spawn('/usr/bin/ssh',[user+'@'+ip])   #运行ssh命令
+fout = file('mylog.txt','w')   #输入、输出日志写入mylog.txt文件
+child.logfile = fout
+try:
+    child.expect('(?i)password')   #匹配password字符串，(?i)表示不区别大小写
+    child.sendline(passwd)
+    child.expect('#')
+    child.sendline('tar -czf /data/nginx_access.tar.gz '+target_file)   #打包nginx日志文件
+    child.expect('#')
+    print(child.before)
+    child.sendline('exit')
+    fout.close()
+except EOF:   #定义EOF异常处理
+    print("expect EOF")
+except TIMEOUT:   #定义TIMEOUT异常处理
+    print("expect TIMEOUT")
+child = pexpect.spawn('/usr/bin/scp', [user+'@'+ip+':/data/nginx_assets.tar.gz','/home'])   #启动scp远程拷贝命令，实现将打包好的nginx日志复制到本地/home目录
+fout = file('mylog.txt','a')
+child.logfile = fout
+try:
+    child.expect('(?i)password')
+    child.sendline(passwd)
+    child.expect(pexpect.EOF)   #匹配缓冲区（结尾），保证文件复制正常完成
+except EOF:
+    print "expect EOF"
+except TIMEOUT:
+    print "expect TIMEOUT"
+
+
+第六章、系统批量运维管理器paramiko详解
+paramiko是基于python实现的SSH2远程安全连接，支持认证及密钥方式。相对于Pexpect，封装的层次更高，更贴近SSH协议的功能。
+安装：
+pip install paramiko
+easy_install paramiko
+paramiko依赖第三方的Crypto、Ecdsa包及python开发包python-devel的支持，源码安装也可以
+一个简单实现远程SSH运行命令的示例，使用密码认证，通过exec_command()方法执行命
+命令：
+vi /home/test/paramiko/simple1.py
+
+#!/usr/bin/env python
+import paramiko
+hostname = '192.168.112.130'
+username = 'root'
+password = 'SKJh935yft#'
+paramiko.util.log_to_file('syslogin.log')   #发送paramiko日志导syslogin.log文件
+ssh = paramiko.SSHClient()   #创建一个ssh客户端client对象
+ssh.load_system_host_key()   #获取客户端host_keys，默认~/.ssh/known_hosts，非默认路径需要制定
+ssh.connect(hostname=hostname,username=username,password=password)   #创建ssh连接
+stdin,stdout,stderr=ssh.exec_command('free -m')   #带哦用远程执行命令方法exec_command()
+print stdout.read()   #打印执行命令结果，得到python列表形式，可以使用stdout.readlines()
+ssh.close()   #关闭ssh连接
+
+paramiko核心组件：SSHClient类，SFTPClient类
+
+SFTPClient类实例，实现文件上传、下载、创建与删除目录
+#!/usr/bin/env python
+import paramiko
+username = "root"
+password = "KJsd8t34d"
+hostname = "192.168.112.130"
+port = 22
+
+try:
+    t = paramiko.Transport((hostname,port))
+    t.connect(username=username,password=password)
+    sftp = paramiko.SFTPClient.from_transport(t)
+
+    sftp.put("/home/user/info.db", "/data/user/info.db")   #上传文件
+    sftp.get("/data/user/info_1.db", "/home/user/info_1.db")   #下载文件
+    sftp.mkdir("/home/userdir",0755)   #创建目录
+    sftp.rmdir("/home/userdir")   #删除目录
+    sftp.rename("/home/test.sh", "/home/testfile.sh")   #文件重命名
+    print sftp.stat("/home/testfile.sh")   #打印文件信息
+    print sftp.listdir("/home")   #打印目录列表
+    t.close();
+except Exception, e:
+    print str(e)
+
+实现密钥方式登陆远程主机：
+首先需要配置与目标折别的密钥认证支持，私钥放在默认目录~/.ssh/id_rsa或者自己制定目录
+ssh-keygen -t rsa
+或者ssh-keygen -t dsa
+
+vi /home/test/paramiko/simple2.py
+
+#!/usr/bin/env python
+import paramiko
+import os
+
+hostname = '192.168.112.130'
+username = 'root'
+paramiko.util.log_to_file('syslogin.log')
+
+ssh = parramiko.SSHClient()
+ssh.load_system_host_keys()
+privatekey = os.path.expanduser('/home/key/id_rsa')   #定义私钥存放路径
+key = paramiko.RSAKey.from_private_key_file(privatekey)   #创建私钥对象key
+
+ssh.connect(hostname=hostname,username=username,pkey = key)
+stdin,stdout,stderr = ssh.exec_command('free -m')
+print stdout.read()
+ssh.close()
+
+
+实现堡垒机模式下的远程命令执行
+vi /home/test/paramiko/simple3.py
+
+#!/usr/bin/env python
+import paramiko
+import os,sys,time
+
+blip="192.168.112.129"   #定义堡垒机信息
+bluser="root"
+blpassword="KJsdiug45"
+
+hostname="192.168.112.131"   #定义业务服务器信息
+username="root"
+password="IS8t5jgrie"
+
+port=22
+passinfo='\'s password: '   #输入服务器密码的前标志串
+paramiko.util.log_to_file('syslogin.log')
+
+ssh=paramiko.SSHClient()   #ssh登陆堡垒机
+ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+ssh.connect(hostname=blip,username=bluser,password=blpasswd)
+
+channel=ssh.invoke_shell()   #创建会话，开启命令调用
+channel=settimeout(10)   #会话命令执行超时时间，单位为秒
+
+buff = ''
+resp = ''
+channel.send('ssh '+username+'@'+hostname+'\n')   #执行ssh登陆业务主机
+while not buff.endswith(passinfo):   #登陆的提示信息判断，输出串结尾含有“\'s password: ”时，退出循环
+    try:
+        resp = channel.recv(9999)
+    except Exception,e:
+        print 'Error info:%s connection time.' % (str(e))
+	channel.close()
+	ssh.close()
+	sys.exit()
+    buff += resp
+    if not buff.find('yes/no')==-1:   #输出串结尾含有"yes/no"时发送"yes"并回车
+        channel.send('tyes\n')
+	buff=''
+
+channel..send(password+'\n')   #发送业务之际密码
+
+buff=''
+while not buff.endswith('# '):   #输出串结尾为"#"时说明校验通过并推出while循环
+    resp = channel.recv(9999)
+    if not resp.find(passinfo)==-1:   #输出串结尾含有"\'s password: "说明密码不正确，要求重新输入
+        print 'Error info: Authentication failed.'
+        channel.close()   #关闭来凝结对象后退出
+        ssh.close()
+        sys.exit()
+    buff += resp
+
+channel.send('ifconfig\n')   #认证通过后发送ifconfig命令来查看结果
+buff=''
+try:
+    while buff.find('# ')==-1:
+        resp = channel.recv(9999)
+	 buff += resp
+except Exception,e:
+    print "error info:"+str(e)
+print buff   #打印输出串
+channel.close()
+ssh.close()
+
+
